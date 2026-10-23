@@ -2368,6 +2368,32 @@ impl Clip {
             .collect();
     }
 
+    /// Takes on the camera moves of `piece`, a clip that sat `offset`
+    /// seconds after this one's start and has been merged into it. Each
+    /// move lands over the same picture it was over before, since both
+    /// clips' moves are in seconds.
+    pub fn absorb_camera(&mut self, piece: &Clip, offset: f64) {
+        if !offset.is_finite() {
+            return;
+        }
+        for one in &piece.camera {
+            self.camera.push(CameraMove {
+                start: one.start + offset,
+                end: one.end + offset,
+                path: one
+                    .path
+                    .iter()
+                    .map(|point| crate::camera::CameraWaypoint {
+                        at: point.at + offset,
+                        ..*point
+                    })
+                    .collect(),
+                ..one.clone()
+            });
+        }
+        self.sort_camera();
+    }
+
     /// Every camera move this clip carries, tidied and in time order.
     /// Called by the document reader and by every command that adds one.
     pub fn sort_camera(&mut self) {

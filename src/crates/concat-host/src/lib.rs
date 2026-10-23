@@ -43,6 +43,7 @@ pub mod reverse;
 pub mod session;
 pub mod sounds;
 pub mod stabilize;
+pub mod takes;
 pub mod templates;
 pub mod titles;
 pub mod updates;

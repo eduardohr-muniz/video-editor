@@ -296,6 +296,7 @@ pub(super) fn apply(
                     let applied = assign(&mut clip.duration, duration);
                     if applied {
                         clip.rewindow_keys(old, 0.0, duration);
+                        clip.rewindow_camera(0.0, duration);
                         crate::speed::rewindow_clip(clip, old, 0.0, duration);
                     }
                     (applied, duration - old, old_end - JOIN_EPSILON)
@@ -337,6 +338,7 @@ pub(super) fn apply(
                         | assign(&mut clip.source_start, source_start);
                     if applied {
                         clip.rewindow_keys(old, moved, old);
+                        clip.rewindow_camera(moved, old);
                         clip.speed = retimed.speed;
                         clip.speed_curve = retimed.speed_curve;
                     }
@@ -394,6 +396,7 @@ pub(super) fn apply(
                 tail.transition_in = None;
                 tail.fade_in = 0.0;
                 tail.rewindow_keys(whole, offset, whole);
+                tail.rewindow_camera(offset, whole);
                 created = Some(tail.id.clone());
                 let head = timeline.clip_at_mut(index);
                 crate::speed::rewindow_clip(head, whole, 0.0, offset);
@@ -401,6 +404,7 @@ pub(super) fn apply(
                 head.source_start = head_source;
                 head.fade_out = 0.0;
                 head.rewindow_keys(whole, 0.0, offset);
+                head.rewindow_camera(0.0, offset);
                 timeline.clips.insert(index + 1, Arc::new(tail));
             }
             // A split always mints the tail, so "minted anything" and
@@ -596,12 +600,14 @@ pub(super) fn apply(
             tail.transition_in = None;
             tail.fade_in = 0.0;
             tail.rewindow_keys(clip_duration, offset, clip_duration);
+            tail.rewindow_camera(offset, clip_duration);
             let head = timeline.clip_at_mut(index);
             crate::speed::rewindow_clip(head, clip_duration, 0.0, offset);
             head.duration = offset;
             head.source_start = head_source;
             head.fade_out = 0.0;
             head.rewindow_keys(clip_duration, 0.0, offset);
+            head.rewindow_camera(0.0, offset);
             timeline.clips.insert(index + 1, Arc::new(tail));
 
             // Ripple every later placement on this track (including the new
@@ -670,6 +676,7 @@ pub(super) fn apply(
             survivor.rewindow_keys(first.duration, 0.0, merged_duration);
             for piece in ordered.iter().skip(1) {
                 survivor.absorb_keys(piece, piece.start - first.start);
+                survivor.absorb_camera(piece, piece.start - first.start);
             }
             survivor.fade_out = last.fade_out;
             // A validated merge always absorbs at least one piece.

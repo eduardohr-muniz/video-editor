@@ -20,12 +20,23 @@ use crate::model::{
 };
 
 mod audio;
+mod camera;
 mod clips;
 pub use clips::{PlayheadSide, consolidation_clips, delete_to_playhead, why_not_merge};
 mod media;
 mod properties;
 mod timelines;
 mod tracks;
+
+/// A camera move's depth when a caller does not say: twice as close.
+fn camera_depth() -> f64 {
+    crate::camera::CameraMove::DEPTH
+}
+
+/// The middle of the frame, for a focus a caller does not give.
+fn half() -> f64 {
+    0.5
+}
 
 /// Fallback length for media whose container reports no duration.
 const UNKNOWN_DURATION: f64 = 5.0;
@@ -79,6 +90,30 @@ pub struct ClipMove {
     /// Destination track. An unknown id moves the clip in time but leaves it
     /// on its current track.
     pub track_id: String,
+}
+
+/// A partial update to one camera move. Every field optional; absent
+/// leaves it as it was.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraPatch {
+    /// When the push begins, in clip-local seconds.
+    pub start: Option<f64>,
+    /// When the pull-out has finished.
+    pub end: Option<f64>,
+    /// How far in, a multiple of the frame.
+    pub depth: Option<f64>,
+    /// What to push in on, across the frame.
+    pub focus_x: Option<f64>,
+    /// And down it.
+    pub focus_y: Option<f64>,
+    /// How long the push in takes, in seconds.
+    pub ease_in: Option<f64>,
+    /// How long the pull out takes.
+    pub ease_out: Option<f64>,
+    /// The curve both ramps follow.
+    pub ease: Option<KeyEase>,
 }
 
 /// A partial update to one clip. Every field optional; `transition_in` and
@@ -464,6 +499,58 @@ pub enum Command {
         clip_id: String,
         /// Which property.
         property: KeyProperty,
+    },
+    /// Adds a camera move to a clip: the frame pushes in on a point,
+    /// holds, and pulls back out. Times are clip-local seconds.
+    ///
+    /// A move overlapping one already there is not refused - the engine
+    /// gives the earlier move the overlap, so what is drawn is always
+    /// one move at a time. The new move's id comes back in the outcome.
+    AddCameraMove {
+        /// The clip.
+        clip_id: String,
+        /// When the push begins, in clip-local seconds.
+        start: f64,
+        /// When the pull-out has finished.
+        end: f64,
+        /// How far in, a multiple of the frame; held to the engine's range.
+        #[serde(default = "camera_depth")]
+        depth: f64,
+        /// What to push in on, across the frame, `0..=1`.
+        #[serde(default = "half")]
+        focus_x: f64,
+        /// And down it.
+        #[serde(default = "half")]
+        focus_y: f64,
+        /// Whether this was suggested from the pointer's path rather than
+        /// placed by hand. Only ever shown.
+        #[serde(default)]
+        mode: crate::camera::CameraMode,
+    },
+    /// Changes one camera move. Every field is optional; absent leaves it.
+    UpdateCameraMove {
+        /// The clip.
+        clip_id: String,
+        /// Which move.
+        move_id: String,
+        /// What to change.
+        patch: CameraPatch,
+    },
+    /// Takes one camera move off a clip.
+    RemoveCameraMove {
+        /// The clip.
+        clip_id: String,
+        /// Which move.
+        move_id: String,
+    },
+    /// Takes every camera move off a clip: the frame holds still again.
+    ClearCameraMoves {
+        /// The clip.
+        clip_id: String,
+        /// Only the moves that were suggested, leaving what was placed by
+        /// hand. What "clear the automatic zooms" means.
+        #[serde(default)]
+        suggested_only: bool,
     },
     /// Puts a key on one parameter of one link of a clip's picture chain,
     /// replacing whichever key on it was already within a hair of `at`.
@@ -1066,6 +1153,28 @@ impl Command {
                 at, value, ease, ..
             } => bad([*at, *value]) || bad(ease.0),
             Command::ClearClipKey { at, .. } | Command::ClearEffectKey { at, .. } => bad([*at]),
+            Command::AddCameraMove {
+                start,
+                end,
+                depth,
+                focus_x,
+                focus_y,
+                ..
+            } => bad([*start, *end, *depth, *focus_x, *focus_y]),
+            Command::UpdateCameraMove { patch, .. } => {
+                bad([
+                    patch.start,
+                    patch.end,
+                    patch.depth,
+                    patch.focus_x,
+                    patch.focus_y,
+                    patch.ease_in,
+                    patch.ease_out,
+                ]
+                .into_iter()
+                .flatten())
+                    || patch.ease.is_some_and(|ease| bad(ease.0))
+            }
             Command::SetClipCutout { cutout, .. } => cutout.as_ref().is_some_and(|cutout| {
                 bad([cutout.feather]) || cutout.strokes.iter().any(bad_stroke)
             }),
@@ -1232,6 +1341,10 @@ pub fn apply(
         | Command::SetClipSpeedCurve { .. }
         | Command::SetClipTransform { .. }
         | Command::FrameClip { .. }) => properties::apply(project, mint, command),
+        command @ (Command::AddCameraMove { .. }
+        | Command::UpdateCameraMove { .. }
+        | Command::RemoveCameraMove { .. }
+        | Command::ClearCameraMoves { .. }) => camera::apply(project, mint, command),
         command @ (Command::DetachAudio { .. } | Command::ReattachAudio { .. }) => {
             audio::apply(project, mint, command)
         }

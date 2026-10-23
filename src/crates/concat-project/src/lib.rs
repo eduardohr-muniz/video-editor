@@ -569,6 +569,287 @@ mod tests {
     }
 
     /// Editor with one media item and one clip at [0, 10) on track one.
+    /// The camera moves on a clip, as `(id, start, end, depth)`.
+    fn moves_on(editor: &Editor, clip_id: &str) -> Vec<(String, f64, f64, f64)> {
+        editor
+            .project()
+            .active()
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| {
+                clip.camera
+                    .iter()
+                    .map(|one| (one.id.clone(), one.start, one.end, one.depth))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Puts a camera move on a clip and gives back its id.
+    fn add_move(editor: &mut Editor, clip_id: &str, start: f64, end: f64) -> String {
+        editor
+            .apply(Command::AddCameraMove {
+                clip_id: clip_id.to_owned(),
+                start,
+                end,
+                depth: 2.0,
+                focus_x: 0.25,
+                focus_y: 0.75,
+                mode: crate::camera::CameraMode::Manual,
+            })
+            .expect("adds")
+            .created_id
+            .expect("id")
+    }
+
+    #[test]
+    fn a_camera_move_is_added_changed_and_taken_off() {
+        let (mut editor, _, clip_id) = fixture();
+        let id = add_move(&mut editor, &clip_id, 1.0, 4.0);
+        assert_eq!(moves_on(&editor, &clip_id), [(id.clone(), 1.0, 4.0, 2.0)]);
+
+        let changed = editor
+            .apply(Command::UpdateCameraMove {
+                clip_id: clip_id.clone(),
+                move_id: id.clone(),
+                patch: crate::commands::CameraPatch {
+                    depth: Some(3.0),
+                    end: Some(6.0),
+                    ..Default::default()
+                },
+            })
+            .expect("updates");
+        assert!(changed.applied);
+        assert_eq!(moves_on(&editor, &clip_id), [(id.clone(), 1.0, 6.0, 3.0)]);
+
+        // The same numbers again change nothing, so no undo step is kept.
+        let again = editor
+            .apply(Command::UpdateCameraMove {
+                clip_id: clip_id.clone(),
+                move_id: id.clone(),
+                patch: crate::commands::CameraPatch {
+                    depth: Some(3.0),
+                    ..Default::default()
+                },
+            })
+            .expect("updates");
+        assert!(!again.applied);
+
+        let removed = editor
+            .apply(Command::RemoveCameraMove {
+                clip_id: clip_id.clone(),
+                move_id: id,
+            })
+            .expect("removes");
+        assert!(removed.applied);
+        assert!(moves_on(&editor, &clip_id).is_empty());
+    }
+
+    #[test]
+    fn a_move_is_held_inside_the_clip_it_is_on() {
+        let (mut editor, _, clip_id) = fixture();
+        // The clip is ten seconds; a move asked for from eight to twenty.
+        let id = add_move(&mut editor, &clip_id, 8.0, 20.0);
+        assert_eq!(moves_on(&editor, &clip_id), [(id, 8.0, 10.0, 2.0)]);
+    }
+
+    #[test]
+    fn a_move_with_no_length_or_no_depth_is_not_kept() {
+        let (mut editor, _, clip_id) = fixture();
+        let flat = editor
+            .apply(Command::AddCameraMove {
+                clip_id: clip_id.clone(),
+                start: 2.0,
+                end: 2.0,
+                depth: 2.0,
+                focus_x: 0.5,
+                focus_y: 0.5,
+                mode: crate::camera::CameraMode::Manual,
+            })
+            .expect("tolerated");
+        assert!(!flat.applied && flat.created_id.is_none());
+
+        let shallow = editor
+            .apply(Command::AddCameraMove {
+                clip_id: clip_id.clone(),
+                start: 1.0,
+                end: 3.0,
+                depth: 1.0,
+                focus_x: 0.5,
+                focus_y: 0.5,
+                mode: crate::camera::CameraMode::Manual,
+            })
+            .expect("tolerated");
+        assert!(!shallow.applied);
+        assert!(moves_on(&editor, &clip_id).is_empty());
+    }
+
+    #[test]
+    fn clearing_the_suggested_moves_leaves_the_ones_placed_by_hand() {
+        let (mut editor, _, clip_id) = fixture();
+        let by_hand = add_move(&mut editor, &clip_id, 1.0, 2.0);
+        let suggested = editor
+            .apply(Command::AddCameraMove {
+                clip_id: clip_id.clone(),
+                start: 4.0,
+                end: 5.0,
+                depth: 2.0,
+                focus_x: 0.5,
+                focus_y: 0.5,
+                mode: crate::camera::CameraMode::Auto,
+            })
+            .expect("adds")
+            .created_id
+            .expect("id");
+        assert_eq!(moves_on(&editor, &clip_id).len(), 2);
+
+        editor
+            .apply(Command::ClearCameraMoves {
+                clip_id: clip_id.clone(),
+                suggested_only: true,
+            })
+            .expect("clears");
+        let left: Vec<String> = moves_on(&editor, &clip_id)
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        assert_eq!(left, [by_hand]);
+        assert_ne!(left.first().map(String::as_str), Some(suggested.as_str()));
+
+        editor
+            .apply(Command::ClearCameraMoves {
+                clip_id: clip_id.clone(),
+                suggested_only: false,
+            })
+            .expect("clears");
+        assert!(moves_on(&editor, &clip_id).is_empty());
+    }
+
+    /// The reason the camera lives on the clip: a cut carries it. Split a
+    /// clip and each half keeps the moves over its own picture, with the
+    /// one that straddles the cut cut at it.
+    #[test]
+    fn splitting_a_clip_gives_each_half_the_moves_over_its_own_picture() {
+        let (mut editor, _, clip_id) = fixture();
+        let early = add_move(&mut editor, &clip_id, 1.0, 2.0);
+        let straddling = add_move(&mut editor, &clip_id, 3.0, 7.0);
+        let late = add_move(&mut editor, &clip_id, 8.0, 9.0);
+
+        editor
+            .apply(Command::SplitClips {
+                clip_ids: vec![clip_id.clone()],
+                time: 5.0,
+            })
+            .expect("splits");
+
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips.len(), 2, "the split made two clips");
+        let head = clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .expect("the head");
+        let tail = clips
+            .iter()
+            .find(|clip| clip.id != clip_id)
+            .expect("the tail");
+
+        // The head keeps the early move untouched and the straddling one
+        // cut at the join.
+        assert_eq!(
+            head.camera
+                .iter()
+                .map(|one| (one.id.clone(), one.start, one.end))
+                .collect::<Vec<_>>(),
+            [(early, 1.0, 2.0), (straddling.clone(), 3.0, 5.0)]
+        );
+        // The tail keeps the rest of the straddling move, rebased to its
+        // own start, and the late one.
+        assert_eq!(
+            tail.camera
+                .iter()
+                .map(|one| (one.id.clone(), one.start, one.end))
+                .collect::<Vec<_>>(),
+            [(straddling, 0.0, 2.0), (late, 3.0, 4.0)]
+        );
+    }
+
+    #[test]
+    fn trimming_a_clip_s_head_moves_its_camera_with_the_window() {
+        let (mut editor, _, clip_id) = fixture();
+        let kept = add_move(&mut editor, &clip_id, 4.0, 6.0);
+        let lost = add_move(&mut editor, &clip_id, 1.0, 2.0);
+
+        // Three seconds off the head.
+        editor
+            .apply(Command::TrimClip {
+                clip_id: clip_id.clone(),
+                edge: TrimEdge::Start,
+                delta: 3.0,
+                ripple: false,
+            })
+            .expect("trims");
+
+        assert_eq!(moves_on(&editor, &clip_id), [(kept, 1.0, 3.0, 2.0)]);
+        assert!(
+            !moves_on(&editor, &clip_id)
+                .iter()
+                .any(|(id, ..)| *id == lost),
+            "a move the new window does not reach is dropped"
+        );
+    }
+
+    #[test]
+    fn trimming_a_clip_s_tail_drops_the_moves_past_the_new_end() {
+        let (mut editor, _, clip_id) = fixture();
+        let kept = add_move(&mut editor, &clip_id, 1.0, 2.0);
+        add_move(&mut editor, &clip_id, 7.0, 9.0);
+
+        // Six seconds off the tail: ten down to four.
+        editor
+            .apply(Command::TrimClip {
+                clip_id: clip_id.clone(),
+                edge: TrimEdge::End,
+                delta: -6.0,
+                ripple: false,
+            })
+            .expect("trims");
+        assert_eq!(moves_on(&editor, &clip_id), [(kept, 1.0, 2.0, 2.0)]);
+    }
+
+    #[test]
+    fn merging_two_clips_keeps_both_halves_cameras() {
+        let (mut editor, _, clip_id) = fixture();
+        let first = add_move(&mut editor, &clip_id, 1.0, 2.0);
+        editor
+            .apply(Command::SplitClips {
+                clip_ids: vec![clip_id.clone()],
+                time: 5.0,
+            })
+            .expect("splits");
+        let tail_id = editor
+            .project()
+            .active()
+            .clips
+            .iter()
+            .find(|clip| clip.id != clip_id)
+            .map(|clip| clip.id.clone())
+            .expect("the tail");
+        let second = add_move(&mut editor, &tail_id, 1.0, 3.0);
+
+        editor
+            .apply(Command::MergeClips {
+                clip_ids: vec![clip_id.clone(), tail_id],
+            })
+            .expect("merges");
+
+        // The tail's move comes back five seconds in, where its picture is.
+        assert_eq!(
+            moves_on(&editor, &clip_id),
+            [(first, 1.0, 2.0, 2.0), (second, 6.0, 8.0, 2.0)]
+        );
+    }
+
     fn fixture() -> (Editor, String, String) {
         let mut editor = Editor::new();
         let media_id = editor

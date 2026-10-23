@@ -15,6 +15,9 @@ gpu = ["concat-export/gpu", "concat-render/gpu"]
 concat-core.workspace = true
 concat-media.workspace = true
 concat-project.workspace = true
+# Screen recording: the takes module imports a recorded bundle, and the
+# window starts and stops one through this crate.
+concat-capture.workspace = true
 concat-export.workspace = true
 # The effect cards: every picture package drawn by its own shader; see
 # cards.rs.

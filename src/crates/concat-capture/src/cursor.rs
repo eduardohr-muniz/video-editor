@@ -705,6 +705,37 @@ mod tests {
         assert!(recorder.is_empty());
     }
 
+    /// The press path end to end, on a machine that has a pointer: the
+    /// helper's line in, a sample with the interaction on it out. Skipped
+    /// where the platform will not say where the pointer is, since there
+    /// is then nothing to record and nothing to test.
+    #[test]
+    fn a_press_from_the_helper_becomes_a_sample() {
+        if position().is_none() {
+            return;
+        }
+        let mut recorder = Recorder::new(area());
+        recorder.hear("STATE:pointer");
+        recorder.hear("INTERACTION:mousedown:1");
+        recorder.hear("INTERACTION:mouseup");
+        recorder.hear("INTERACTION:mousedown:2");
+        let samples = recorder.samples_so_far();
+        assert_eq!(samples.len(), 3, "{samples:?}");
+        assert_eq!(samples[0].interaction_type, Some(Interaction::Click));
+        assert_eq!(samples[0].cursor_type, Some(Pointer::Pointer));
+        assert_eq!(samples[1].interaction_type, Some(Interaction::MouseUp));
+        assert_eq!(samples[2].interaction_type, Some(Interaction::RightClick));
+        // A second left press in the same place, straight after the first,
+        // is the one double click the system would have reported.
+        recorder.hear("INTERACTION:mousedown:1");
+        let samples = recorder.samples_so_far();
+        assert_eq!(
+            samples[samples.len() - 1].interaction_type,
+            Some(Interaction::DoubleClick),
+            "{samples:?}"
+        );
+    }
+
     #[test]
     fn a_paused_take_collects_nothing_and_its_clock_stops() {
         let mut recorder = Recorder::new(area());
