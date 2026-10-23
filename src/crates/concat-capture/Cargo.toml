@@ -1,0 +1,29 @@
+[package]
+name = "concat-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Recording the screen, the cursor and the machine's sound into a bundle the editor can open."
+
+[dependencies]
+concat-core.workspace = true
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+# The pointer's position, sampled while a take runs. CoreGraphics on Apple
+# platforms is three functions and a struct, declared in cursor.rs rather
+# than pulled in as a crate: objc2-core-graphics would be a tree of bindings
+# for `CGEventGetLocation`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  # cursor.rs: where the pointer is, and how large the desktop it moves on is.
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+] }
+
+[lints]
+workspace = true

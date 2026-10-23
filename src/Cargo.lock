@@ -1196,6 +1196,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "concat-capture"
+version = "0.2.8"
+dependencies = [
+ "concat-core",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "concat-cli"
 version = "0.2.8"
 dependencies = [
