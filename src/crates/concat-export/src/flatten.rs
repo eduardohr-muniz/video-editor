@@ -115,6 +115,7 @@ pub fn flatten_timeline_in(
                     .filter_map(|point| point.slope)
                     .collect(),
                 animation: export_keys(clip),
+                camera: clip.camera.clone(),
                 flip_h: clip.flip_h,
                 flip_v: clip.flip_v,
                 blend: clip.blend.clone(),

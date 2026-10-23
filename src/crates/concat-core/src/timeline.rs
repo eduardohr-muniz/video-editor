@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::animate::Animation;
 use crate::arena::{Arena, Id};
+use crate::camera::Camera;
 use crate::mask::ShapeMask;
 use crate::retime::SpeedCurve;
 use crate::time::{FrameRate, Rational, TimeRange};
@@ -104,6 +105,13 @@ pub struct Clip {
     /// The shape that keeps part of the picture, when one does; its
     /// numbers ride the animation's mask tracks.
     pub mask: Option<ShapeMask>,
+    /// The camera over this clip: a zoom that pushes in on a point and
+    /// back out. None for a clip the frame holds still on.
+    ///
+    /// Applied over the placement and the keys rather than instead of
+    /// them, so a move composes with a pan somebody keyed by hand. See
+    /// [`crate::camera`].
+    pub camera: Option<Camera>,
 }
 
 /// How a layer's colour meets what is beneath it.
@@ -227,6 +235,7 @@ impl Clip {
             blend: Blend::Normal,
             hold: false,
             mask: None,
+            camera: None,
         }
     }
 
@@ -240,11 +249,20 @@ impl Clip {
             .clamp(0.0, 1.0)
     }
 
-    /// The placement at `time`: the clip's own, moved by its animation.
+    /// The placement at `time`: the clip's own, moved by its animation and
+    /// then by its camera.
+    ///
+    /// The camera last, and over the result rather than into it: a move is
+    /// a zoom of the frame, and whatever the clip's placement and keys have
+    /// made of the picture is what it zooms.
     pub fn transform_at(&self, time: Rational) -> Transform {
-        match &self.animation {
+        let placed = match &self.animation {
             Some(animation) => animation.transform_at(self.transform, self.fraction_at(time)),
             None => self.transform,
+        };
+        match &self.camera {
+            Some(camera) => camera.apply(placed, time - self.start),
+            None => placed,
         }
     }
 
@@ -530,6 +548,57 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_clip_s_camera_zooms_what_its_placement_and_keys_have_made() {
+        use crate::animate::{Ease, Key, Track};
+        use crate::camera::{Camera, Focus, Move};
+
+        let mut clip = Clip::new(
+            MediaRef::new("screen.mp4"),
+            Rational::from_int(10),
+            Rational::from_int(4),
+        );
+        // A clip pushed off to one side, with a scale that rides to 1.5
+        // over its length, and a camera that pushes in twice as far.
+        clip.transform.offset_x = 0.1;
+        clip.animation = Some(Animation {
+            scale: Track::new(vec![
+                Key {
+                    at: 0.0,
+                    value: 1.0,
+                    ease: Ease::LINEAR,
+                },
+                Key {
+                    at: 1.0,
+                    value: 1.5,
+                    ease: Ease::LINEAR,
+                },
+            ]),
+            ..Animation::default()
+        });
+        clip.camera = Some(Camera::new([Move {
+            ease_in: Rational::ZERO,
+            ease_out: Rational::ZERO,
+            ..Move::onto(Rational::ZERO, Rational::from_int(4), 2.0, Focus::CENTRE)
+        }]));
+
+        // The camera's time is clip-local: the move starts at zero, which
+        // is ten seconds into the timeline.
+        let half_way = clip.transform_at(Rational::from_int(12));
+        // The ride is half way to 1.5, and the camera doubles it.
+        assert!((half_way.scale - 2.5).abs() < 1e-9, "{}", half_way.scale);
+        // The clip's own pan survives, doubled about the frame's centre.
+        assert!(
+            (half_way.offset_x - 0.2).abs() < 1e-9,
+            "{}",
+            half_way.offset_x
+        );
+
+        // Without the camera, just the ride.
+        clip.camera = None;
+        assert!((clip.transform_at(Rational::from_int(12)).scale - 1.25).abs() < 1e-9);
+    }
     use super::*;
     use crate::retime::SpeedCurve;
 

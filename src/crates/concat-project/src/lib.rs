@@ -21,6 +21,8 @@
 //! document model needs serde, and concat-core's zero-dependency rule is worth
 //! more than the adjacency.
 
+pub mod autozoom;
+pub mod camera;
 pub mod commands;
 pub mod doc;
 pub mod editor;

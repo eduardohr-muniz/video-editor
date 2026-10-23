@@ -323,6 +323,9 @@ pub(crate) fn build_timeline(
             engine_clip.retime = clip.retime();
         }
         engine_clip.animation = animation_of(&clip.animation);
+        // Over the placement and the keys, not into them: a camera move
+        // zooms whatever they have made of the picture.
+        engine_clip.camera = concat_project::camera::engine(&clip.camera);
         engine_clip.blend = concat_core::timeline::Blend::parse(&clip.blend);
         engine_clip.mask = clip.mask.map(|mask| mask.engine());
         engine_clip.transform = Transform {
@@ -346,13 +349,22 @@ pub(crate) fn build_timeline(
             let planned = planned_geometry(clip);
             let steadied = StabilizeJob::of(clip);
             if let Some(size) = fitted_size(request, clip, planned.is_some()) {
-                // A stabilized picture is drawn larger by its zoom: decoded
-                // that much larger too, up to the file's own size, so the
-                // zoom costs no sharpness the file had.
-                let size = match (&steadied, clip.media_width, clip.media_height) {
-                    (Some(job), Some(width), Some(height)) if job.zoom() > 1.0 => {
-                        let grow = job
-                            .zoom()
+                // A picture drawn larger than the frame is decoded larger
+                // too, up to the file's own size, so the enlargement costs
+                // no sharpness the file had. Two things enlarge: a
+                // stabilizer's zoom, and a camera move pushing in. Whichever
+                // asks for more wins - they do not compound, since the
+                // camera zooms what the stabilizer has already drawn.
+                //
+                // This is the difference between a screen recording that
+                // reads at 2x and one that turns to mush: a 2880-pixel
+                // desktop decoded down to a 1920-pixel frame has thrown the
+                // pixels away before the camera ever asks for them.
+                let enlarged = concat_project::camera::deepest(&clip.camera)
+                    .max(steadied.as_ref().map_or(1.0, StabilizeJob::zoom));
+                let size = match (clip.media_width, clip.media_height) {
+                    (Some(width), Some(height)) if enlarged > 1.0 => {
+                        let grow = enlarged
                             .min(f64::from(width) / f64::from(size.0.max(1)))
                             .min(f64::from(height) / f64::from(size.1.max(1)))
                             .max(1.0);

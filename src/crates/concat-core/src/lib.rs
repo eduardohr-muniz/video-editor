@@ -11,6 +11,7 @@
 //! - [`arena`] - generational arenas and `Copy` handles, the way Concat models
 //!   graphs.
 //! - [`frame`] - a decoded RGBA8 image buffer.
+//! - [`camera`] - a zoom that pushes in on a point and back out.
 //! - [`timeline`] - projects, tracks and clips.
 //!
 //! If you are about to add a dependency to this crate, the thing you are adding
@@ -18,6 +19,7 @@
 
 pub mod animate;
 pub mod arena;
+pub mod camera;
 pub mod frame;
 pub mod mask;
 pub mod retime;
@@ -25,6 +27,7 @@ pub mod shader;
 pub mod time;
 pub mod timeline;
 
+pub use camera::Camera;
 pub use frame::Frame;
 pub use retime::SpeedCurve;
 pub use shader::{Lut, RevealMap, ShaderPass, Stage, TransitionPass};

@@ -17,6 +17,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use crate::camera::CameraMove;
+
 /// What a piece of media is. A still is not a video with one frame: it has no
 /// intrinsic duration, so its length on a timeline is editorial.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1888,6 +1890,16 @@ pub struct Clip {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "wire::maybe")]
     pub background: Option<Background>,
+    /// The camera over this clip: where the frame pushes in, how far and
+    /// onto what, in clip-local seconds. Empty is a frame that holds still.
+    ///
+    /// On the clip rather than on the timeline so that cutting carries it:
+    /// split and each half keeps the moves over its own picture, ripple and
+    /// they travel, trim and [`Clip::rewindow_camera`] moves them with the
+    /// window. See [`crate::camera`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(deserialize_with = "wire::list")]
+    pub camera: Vec<CameraMove>,
     /// Fields this build does not know, kept so a document written by a
     /// newer or a different build round-trips through this one intact.
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
@@ -1987,6 +1999,7 @@ impl Clip {
             text: None,
             shape: None,
             background: None,
+            camera: Vec::new(),
             extra: Map::new(),
         }
     }
@@ -2065,6 +2078,7 @@ impl Clip {
                 entry.sort_keys();
             }
         }
+        self.sort_camera();
         self.text = self.text.take().map(TextStyle::tidy);
         self.shape = self.shape.take().map(ShapeStyle::tidy);
         self.background = self.background.take().map(Background::tidy);
@@ -2337,6 +2351,33 @@ impl Clip {
             link.sort_keys();
         }
         self.sort_keys();
+    }
+
+    /// Moves the camera with a retrim: the clip was `old` seconds long and
+    /// is now the window `from..to` of its old self. A move the new window
+    /// does not reach is dropped; one that straddles an edge is cut at it.
+    ///
+    /// Camera moves are in seconds rather than in fractions of the clip, so
+    /// unlike the keys they are not rescaled - a push that took half a
+    /// second still takes half a second after a trim, which is what anyone
+    /// would expect of it.
+    pub fn rewindow_camera(&mut self, from: f64, to: f64) {
+        self.camera = std::mem::take(&mut self.camera)
+            .into_iter()
+            .filter_map(|one| one.rewindow(from, to))
+            .collect();
+    }
+
+    /// Every camera move this clip carries, tidied and in time order.
+    /// Called by the document reader and by every command that adds one.
+    pub fn sort_camera(&mut self) {
+        self.camera = std::mem::take(&mut self.camera)
+            .into_iter()
+            .map(CameraMove::tidy)
+            .filter(CameraMove::is_usable)
+            .collect();
+        self.camera
+            .sort_by(|left, right| left.start.total_cmp(&right.start));
     }
 
     /// Takes on the keys of `piece`, a clip that sat `offset` seconds

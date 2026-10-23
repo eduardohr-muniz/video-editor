@@ -250,6 +250,11 @@ pub struct ExportClip {
     /// black and for every other clip. See `Timeline::background_of`.
     #[serde(default)]
     pub backdrop: Option<ExportBackdrop>,
+    /// The camera over this clip - where the frame pushes in, how far and
+    /// onto what - as the document holds it, in clip-local seconds. Empty
+    /// is a frame that holds still. See `concat_project::camera`.
+    #[serde(default)]
+    pub camera: Vec<concat_project::camera::CameraMove>,
 }
 
 /// A clip's background, resolved for drawing: the document's
@@ -326,6 +331,7 @@ impl ExportClip {
             speed_curve: Vec::new(),
             speed_slopes: Vec::new(),
             animation: Vec::new(),
+            camera: Vec::new(),
             flip_h: false,
             flip_v: false,
             blend: String::new(),
@@ -2513,6 +2519,108 @@ pub fn preview_moments(
 
 #[cfg(test)]
 mod tests {
+    /// The id of the one clip in a built timeline, for the tests that
+    /// build a timeline out of a single clip.
+    fn only_clip(timeline: &concat_core::Timeline) -> concat_core::timeline::ClipId {
+        timeline
+            .tracks()
+            .flat_map(|(_, track)| track.clips().iter().copied())
+            .next()
+            .expect("one clip")
+    }
+
+    /// The camera is the one thing a screen recording cannot do without,
+    /// and it has to survive the whole trip: a document's move, through the
+    /// flattener's clip, into the engine's timeline, and out as a zoomed
+    /// placement at the right instant. These two tests are that trip.
+    #[test]
+    fn a_camera_move_reaches_the_engine_and_zooms_the_frame() {
+        use concat_project::camera::CameraMove;
+
+        // A clip from two to ten seconds of the timeline, with a move that
+        // pushes in twice onto a point a quarter across, one to four seconds
+        // *into the clip* - so three to six on the timeline. No ramps, so
+        // the zoom is on at the move's edges and off outside them, which
+        // makes the three instants below unambiguous.
+        let mut clip = ExportClip {
+            path: "screen.mp4".to_owned(),
+            media_width: Some(2880),
+            media_height: Some(1800),
+            ..ExportClip::blank(ClipKind::Video, 2.0, 8.0, 0)
+        };
+        clip.camera = vec![CameraMove {
+            ease_in: 0.0,
+            ease_out: 0.0,
+            ..CameraMove::onto("cam1", 1.0, 4.0, 2.0, (0.25, 0.5))
+        }];
+
+        let plan = preview_plan(&[clip], 1920, 1080, 30, 1, ColorSpace::Sdr);
+        let id = only_clip(&plan.built.timeline);
+        let engine_clip = plan
+            .built
+            .timeline
+            .clip(id)
+            .expect("the clip reached the engine");
+        assert!(
+            engine_clip.camera.is_some(),
+            "the camera did not cross over"
+        );
+
+        // Before the move: the picture as placed.
+        let still = engine_clip.transform_at(Rational::from_int(2));
+        assert_eq!(still.scale, 1.0);
+        assert_eq!(still.offset_x, 0.0);
+
+        // Inside it: twice as close, and the focus has stayed put. Where
+        // the frame point that was at 0.25 ends up is the whole test - a
+        // zoom that scales without moving the picture is not a camera.
+        let pushed = engine_clip.transform_at(Rational::from_int(4));
+        assert_eq!(pushed.scale, 2.0);
+        let focus_after: f64 = 0.5 + pushed.offset_x + (0.25 - 0.5) * 2.0;
+        assert!(
+            (focus_after - 0.25).abs() < 1e-9,
+            "the focus moved to {focus_after}"
+        );
+
+        // After it, and still inside the clip: back to the picture as placed.
+        let let_go = engine_clip.transform_at(Rational::from_int(8));
+        assert_eq!(let_go.scale, 1.0);
+        assert_eq!(let_go.offset_x, 0.0);
+    }
+
+    /// A camera that pushes in twice asks the decoder for twice the pixels,
+    /// up to what the file has. Without this a 2880-pixel desktop is
+    /// decoded down to the frame and the zoom is mush - which is the
+    /// difference between a readable screen recording and an unreadable one.
+    #[test]
+    fn a_camera_move_asks_the_decoder_for_the_pixels_it_will_need() {
+        use concat_project::camera::CameraMove;
+
+        let plain = ExportClip {
+            path: "screen.mp4".to_owned(),
+            media_width: Some(2880),
+            media_height: Some(1800),
+            ..ExportClip::blank(ClipKind::Video, 0.0, 4.0, 0)
+        };
+        let mut zoomed = plain.clone();
+        zoomed.camera = vec![CameraMove::onto("cam1", 1.0, 3.0, 2.0, (0.5, 0.5))];
+
+        let sizes = |clip: ExportClip| {
+            let plan = preview_plan(&[clip], 1440, 900, 30, 1, ColorSpace::Sdr);
+            let id = only_clip(&plan.built.timeline);
+            plan.built.decode_sizes.get(&id).copied()
+        };
+
+        let held = sizes(plain).expect("a decode size");
+        let pushed = sizes(zoomed).expect("a decode size");
+        assert!(
+            pushed.0 >= held.0 * 2 - 2 && pushed.1 >= held.1 * 2 - 2,
+            "a 2x move decoded at {pushed:?} where the frame is {held:?}"
+        );
+        // And never past what the file holds.
+        assert!(pushed.0 <= 2880 && pushed.1 <= 1800, "{pushed:?}");
+    }
+
     /// A treatment on track 1 runs over what track 0 drew and not over what
     /// track 2 draws on top of it, and its strength blends the result back.
     #[test]
